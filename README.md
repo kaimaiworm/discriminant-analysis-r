@@ -1,4 +1,4 @@
-# Classification using discriminant anylssi in R
+# Classification using discriminant analysis in R
 
 Dimensionality reduction and classification using LDA, QDA and FLDA on the wine dataset
 
