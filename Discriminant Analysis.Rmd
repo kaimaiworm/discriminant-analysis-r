@@ -1,0 +1,389 @@
+---
+title: "Discriminant Analysis"
+output: html_document
+date: "16.01.2023"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(MASS)
+library(readr)
+library(tidyr)
+library(dplyr)
+library(MVN)
+library(rstudioapi) 
+library(caTools)
+library(caret)
+library(devtools)
+library(MVTests)
+library(ggord)
+library(ggplot2)
+library(tibble)
+library(GGally)
+library(heplots)
+library(nnet)
+library(klaR)
+#install_github("fawda123/ggord") #package from github
+
+#set working directory
+#setwd(dirname(getActiveDocumentContext()$path)) 
+
+#input_path = paste0(getwd(), "/Input/")
+#output_path = paste0(getwd(), "/Output/")
+
+#suppress warnings
+options(warn=-1)
+```
+
+```{r} 
+##load data
+wine = rattle::wine
+#change column names to lower case
+colnames(wine) = lapply(colnames(wine), tolower)
+
+```
+
+# Data overview
+
+```{r}
+head(wine)
+```
+
+Graphical overview of selected variables
+
+```{r}
+#graphically
+wine %>%  ggpairs(columns = c("malic", "alcohol"), 
+                  aes(color = type),
+                  upper = list(continuous = wrap('cor', size = 5)),
+                  lower = list(combo = wrap("points", bins = 30)),
+                  diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
+                  legend = c(1,1))
+
+```
+
+
+
+# Assumption checks
+# Multicollinearity
+
+Multicollinearity may lead to biased errors but data indicates nothing too significant
+```{r, results ='hide'}
+#Check for multicollinearity
+cor(wine[,-1])
+```
+
+# Normallity
+Check if data is normally distributed: 
+
+```{r}
+#normal distribution test
+types = list()
+for (i in unique(wine$type)){
+  subdf = subset(x=wine, subset=type==i)
+  # apply the rest of your analysis there using subdf, for instance 
+  types[[i]] = mvn(subdf[,-1])
+}
+```
+
+$H_0:$ data is multivarite normally distributed
+```{r}
+types[["1"]][["multivariateNormality"]]
+types[["2"]][["multivariateNormality"]]
+types[["3"]][["multivariateNormality"]]
+```
+
+Multivariate normality is rejected for the second class. Argument for using LDA over QDA.
+
+# Homogeneity of variances
+
+Levene Test has some robustness when Gaussian assumption does not hold
+
+$H_0:$ Covariance matrix is homogeneous among groups
+
+```{r}
+#covariance equality test
+leveneTests(wine[,-1], wine[,1])
+```
+For most variables the assumption does not hold. Argument for using QDA over LDA.
+
+
+# Partition sample
+```{r}
+set.seed(123) 
+split = sample.split(wine$type, SplitRatio = 0.7)
+wine.train = subset(wine, split == TRUE)
+wine.test = subset(wine, split == FALSE)
+```
+
+# Dimensionality reduction
+
+When using Fisher's LDA, discriminant analysis allows for reducing dimensions in data, similar to PCA.
+```{r}
+
+#compute linear discriminants of training data
+lda.wine = lda(formula = type ~ ., data = wine.train)
+pred.wine = as.data.frame(predict(lda.wine))
+
+lda.wine$scaling
+```
+
+# Density plot
+Histogram and density of first linear discriminant
+```{r}
+#Density LD1
+ggplot(pred.wine, aes(x=x.LD1, color=class, fill=class)) + 
+  geom_histogram(aes(y= after_stat(density)), alpha=0.5, 
+                 position="identity", bins = 30)+
+  geom_density(alpha=0.2, )+
+  xlab("First Linear Discriminant") +
+  ylab("Density")
+```
+
+
+# Biplot
+```{r, include = FALSE}
+#pull vectors from lda
+vecs = lda.wine %>% 
+  .$scaling %>% 
+  as.data.frame %>% 
+  rownames_to_column('var') %>% 
+  filter(var %in% c("flavanoids", "nonflavanoids", "ash", "dilution", "hue", "alcohol"))
+
+#get labels
+vecs_lab = vecs
+
+#manually adjust label space
+vecs_lab[1, 2:3] = vecs_lab[1, 2:3] * 1.25  #alcohol
+vecs_lab[2, 2:3] = vecs_lab[2, 2:3] * 1.15 #ash
+vecs_lab[3, 2:3] = vecs_lab[3, 2:3] * 1.4 #flavanoids
+vecs_lab[4, 2:3] = vecs_lab[4, 2:3] * 1.2  #nonflavanoird
+vecs_lab[5, 2:3] = vecs_lab[5, 2:3] * 1.1  #hue
+vecs_lab[6, 2:3] = vecs_lab[6, 2:3] * 1.6  #dilution
+```
+
+```{r}
+#plot
+ggord(lda.wine, wine.train$type, vec_ext = 0, txt = NULL, arrow = 0, grp_title = "Type", size = 2, alpha = 0.8, ylim=c(-7,5), xlim=c(-7,7), ellipse = FALSE) + 
+        geom_segment(
+          data = vecs,
+          aes_string(x = 0, y = 0, xend = 'LD1', yend = 'LD2'),
+          arrow = grid::arrow(length = grid::unit(0.4, "cm"))
+        ) + 
+        geom_text(data = vecs_lab, aes_string(x = 'LD1', y = 'LD2', label = 'var'),
+                  size = 4
+        )
+
+
+```
+
+# Comparison of PCA vs LDA
+
+LDA: Maximize between group variance, minimize within group variance
+
+PCA: Find directions of maximum variance in data
+```{r, results = "hide"}
+###PCA
+pca = preProcess(x = wine.train[,-1], method = 'pca', pcaComp = 2)
+pred.pca.train = predict(pca, wine.train)
+pred.pca.test = predict(pca, wine.test)
+
+#Fit logit
+logit.pca = multinom(type ~ PC1 + PC2, data = pred.pca.train)
+#Predict
+logit.pred.pca = predict(logit.pca, newdata = pred.pca.test[-1])
+
+###LDA
+lda.wine = lda(formula = type ~ ., data = wine.train)
+pred.lda.train = as.data.frame(predict(lda.wine))
+pred.lda.test = as.data.frame(predict(lda.wine, newdata=wine.test))
+
+#Fit logit
+logit.lda = multinom(class ~ x.LD1 + x.LD2, data = pred.lda.train)
+#Predict
+logit.pred.lda = predict(logit.lda, newdata = pred.lda.test)
+```
+
+
+```{r}
+###Compare success rates of logistic classification
+#LDA
+mean(logit.pred.lda == wine.test$type )
+#PCA
+mean(logit.pred.pca == wine.test$type )
+```
+Here, LDA performed better in dimension reduction
+
+
+# Classification
+# Probability LDA
+```{r}
+###perform probability LDA
+##define prediction function for LDA with probability model
+fit_pLDA =  function(data, groupvec){
+  
+  #data
+  g = as.factor(groupvec)
+  x = as.matrix(data[,-1])
+  
+  #priors as proportions
+  priors = as.vector(table(g))/length(g)
+  lev = levels(g) 
+  names(priors) = lev
+  
+  #var means by classes
+  classm = tapply(c(x), list(rep(g, ncol(x)), col(x)), mean)
+  colnames(classm) = colnames(x)
+  
+  #covariance matrix
+  varcov = as.matrix(cov(x))
+  
+  list(priors = priors, class.means = classm, cov = varcov , levels = lev)
+} 
+```
+
+```{r}
+predict_pLDA = function(object, data){
+  
+  lev = object$levels
+  priors = object$priors
+  cm = object$class.means
+  varcov = object$cov
+  x = data[,-1]
+  
+  #Result matrix
+  dvals = matrix(NA, nrow = nrow(x), ncol = length(lev))
+  colnames(dvals) = lev
+  
+  #perform plda
+  for (i in 1:nrow(x)) {
+    for (j in 1:length(lev)) {
+      
+      #define vectors because R is weird
+      mu = as.matrix(cm[j, ]) #column vector
+      obs = as.matrix(x[i,]) #row vector
+      
+      dk = t(mu) %*% solve(varcov) %*% t(obs) - 0.5 %*% t(mu) %*% solve(varcov) %*% mu + 
+           log(priors[j])
+      
+      dvals[i, j] = dk
+    }
+  }
+  
+  class = factor(lev[max.col(dvals)], levels = lev)
+  list(class = class, dvals = dvals)
+}
+
+
+
+```
+
+# Compare LDA, QDA and Logistic Regression
+```{r}
+##Fit probability LDA
+plda.wine = fit_pLDA(data = wine.train, groupvec = wine.train$type)
+
+#predict on training and test data
+pred.plda.train = as.data.frame(predict_pLDA(plda.wine, data = wine.train))
+pred.plda.test = as.data.frame(predict_pLDA(plda.wine, data = wine.test))
+
+```
+
+```{r}
+##perform QDA 
+qda.wine = qda(formula = type ~ ., data = wine.train)
+
+#predict on training and test data  
+pred.qda.train = as.data.frame(predict(qda.wine))
+pred.qda.test = as.data.frame(predict(qda.wine, newdata=wine.test))
+```
+
+```{r, results ='hide'}
+##Use logistic regression as comparison
+logit = multinom(type ~ ., data = wine.train)
+logit.pred.train = predict(logit, newdata = wine.train)
+logit.pred.test = predict(logit, newdata = wine.test)
+```
+
+```{r, include = FALSE}
+####Create table for success rate comparison
+#training results
+acc.lda.train = mean(pred.lda.train$class == wine.train$type)
+acc.plda.train = mean(pred.plda.train$class == wine.train$type) 
+acc.qda.train = mean(pred.qda.train$class == wine.train$type) 
+acc.logit.train = mean(logit.pred.train == wine.train$type) 
+
+acc.train = c(acc.lda.train, acc.plda.train, acc.qda.train, acc.logit.train)
+
+#test results
+acc.lda.test = mean(pred.lda.test$class == wine.test$type)
+acc.plda.test = mean(pred.plda.test$class == wine.test$type) 
+acc.qda.test = mean(pred.qda.test$class == wine.test$type) 
+acc.logit.test = mean(logit.pred.test == wine.test$type) 
+
+acc.test = round(c(acc.lda.test, acc.plda.test, acc.qda.test, acc.logit.test), digits = 4)
+
+comparison = data.frame("training sample" = acc.train, "test sample" = acc.test)
+rownames(comparison) = c("Fisher LDA", "PLDA", "QDA", "Logit")
+```
+
+```{r}
+print(comparison)
+```
+
+At first glance, all DAs outperform logistic regression.
+
+# Cross-validation
+
+Use resampling methods to compute more reliable success rates
+```{r}
+#Probability LDA
+plda.jack = c()
+for (i in 1:nrow(wine)){
+  plda.fit = fit_pLDA(data=wine[-i,], groupvec = wine$type[-i])
+  plda.pred = predict_pLDA(plda.fit, data=wine[i,])
+  plda.jack[i] = plda.pred$class
+}
+```
+
+```{r, include = FALSE}
+#Fisher LDA
+lda.jack = data.frame(class = factor(1 ,levels = c("1","2", "3")), LD1 =  numeric(1), LD2 = numeric(1))
+for (i in 1:nrow(wine)){
+  lda.fit = lda(type ~ ., data=wine[-i,])
+  lda.pred = predict(lda.fit, newdata=wine[i,])
+  lda.jack[i,1] = lda.pred$class
+  lda.jack[i,2] = lda.pred$x[1]
+  lda.jack[i,3] = lda.pred$x[2]
+}
+
+qda.jack = c()
+for (i in 1:nrow(wine)){
+  qda.fit = qda(type ~ ., data=wine[-i,])
+  qda.pred = predict(qda.fit, newdata=wine[i,])
+  qda.jack[i] = qda.pred$class
+}
+
+#Logit
+logit.jack = c()
+for (i in 1:nrow(wine)){
+  logit.fit = multinom(type ~ ., data=wine[-i,])
+  logit.pred = predict(logit.fit, newdata=wine[i,])
+  logit.jack[i] = logit.pred
+}
+
+#create table to compare validation set approach vs jackknife
+#test results
+acc.lda.jack = mean(lda.jack$class== wine$type)
+acc.plda.jack = mean(plda.jack== wine$type) 
+acc.qda.jack = mean(qda.jack== wine$type)
+acc.logit.jack = mean(logit.jack== wine$type) 
+
+acc.jack = round(c(acc.lda.jack, acc.plda.jack, acc.qda.jack, acc.logit.jack), digits = 4)
+comparison$jackknife = c(acc.jack)
+```
+
+```{r}
+print(comparison)
+```
+All results improved but logistic regression still lower success rate.
